@@ -1,0 +1,138 @@
+version: '3.8'
+services:
+
+    # php service
+    app:
+        image: achwatm/phpfpm:8.2
+        build:
+            context: ./docker/docker-files/php-fpm
+            dockerfile: Dockerfile
+        command: /bin/sh -c "php-fpm -d date.timezone=$${TZ} -d expose_php=0"
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        tty: true
+        volumes:
+          - type: bind
+            source: .
+            target: /var/www/app/
+        working_dir: /var/www/app/
+        env_file:
+            - ./docker/.env
+        environment:
+            SERVICE_NAME: app
+            SERVICE_TAGS: dev
+            LOG_LINES: 9999:-9999
+        restart: always
+        networks:
+            app-network:
+                aliases:
+                    - phpfpm
+
+    # nginx Service
+    webserver:
+        image: nginx:alpine
+        restart: always
+        tty: true
+        ports:
+            - "81:80"
+            - "443:443"
+        env_file:
+            - ./docker/.env
+        volumes:
+          - type: bind
+            source: .
+            target: /var/www/app/
+          - ./docker/configs/nginx/conf.d:/etc/nginx/conf.d:rw
+        networks:
+            app-network:
+                aliases:
+                    - nginx
+
+    # mysql service
+    db:
+        image: mysql:8.0
+        platform: linux/amd64
+        restart: always
+        tty: true
+        ports:
+            - "3306:3306"
+        env_file:
+            - docker/.env
+        environment:
+            SERVICE_NAME: mysql
+        volumes:
+            - type: bind
+              source: ./docker/dbdata/data
+              target: /var/lib/mysql
+            - ./docker/configs/mysql/:/etc/mysql/conf.d/:ro
+        sysctls:
+            - net.ipv6.conf.lo.disable_ipv6=0
+            - net.ipv6.conf.all.disable_ipv6=0
+        networks:
+            app-network:
+                aliases:
+                    - db
+
+    redis:
+        image: redis:latest
+        deploy:
+            replicas: 1
+        env_file:
+            - ./docker/.env
+        volumes:
+            - redis-data:/data
+        restart: always
+        ports:
+            - "6379:6379"
+        networks:
+            app-network:
+                aliases:
+                    - redis
+
+    # cron service
+    cron:
+        image: cron
+        depends_on:
+            - redis
+            - app
+        deploy:
+            replicas: 1
+            update_config:
+                parallelism: 2
+                delay: 10s
+                order: stop-first
+        build:
+            context: ./docker/docker-files/cron
+            dockerfile: Dockerfile
+        tty: true
+        stdin_open: true
+        volumes:
+          - type: bind
+            source: .
+            target: /var/www/app/
+        working_dir: /var/www/app/
+        env_file:
+            - docker/.env
+        environment:
+            SERVICE_NAME: cron
+            LOG_LINES: 9999:-9999
+        restart: always
+        networks:
+            app-network:
+                aliases:
+                    - cron
+
+networks:
+    app-network:
+        driver: bridge
+        driver_opts:
+            com.docker.network.bridge.name: "${COMPOSE_PROJECT_NAME}"
+
+        #enable_ipv6: false
+
+# Volumes
+volumes:
+    mysql-vol-1:
+    mysql-socket-vol-1:
+    redis-data:
+        driver: local
